@@ -32,6 +32,7 @@ class Scenario(BaseModel):
 class AnalyzeRequest(BaseModel):
     asset_type: str
     source_ip: str
+    user_environment: dict
 
 class ChatRequest(BaseModel):
     brief_context: str
@@ -86,29 +87,77 @@ def analyze(req: AnalyzeRequest):
         api_key=github_token,
     )
 
+    env = req.user_environment
+    org_name = env.get("org_name", "")
+    cloud_provider = env.get("cloud_provider", "")
+    key_assets = env.get("key_assets", [])
+    os_stack = env.get("os_stack", "")
+    team_size = env.get("team_size", "")
+    industry = env.get("industry", "")
+    existing_security_tools = env.get("existing_security_tools", "")
+    
+    uses_active_directory = env.get("uses_active_directory", False)
+    active_directory = env.get("active_directory", None)
+    architecture_description = env.get("architecture_description", "")
+
+    ad_info = ""
+    if uses_active_directory and active_directory:
+        ad = active_directory
+        ad_info = f"- Active Directory: Domain {ad.get('domain_name', '')}, {ad.get('domain_controller_count', '')} DCs, {ad.get('forest_type', '')}, {ad.get('hybrid_mode', '')}, {ad.get('privileged_account_count', '')} privileged accounts, {ad.get('service_account_count', '')} service accounts, trusts: {ad.get('trust_relationships', '')}, AD tools: {ad.get('ad_security_tools', '')}\n"
+
     prompt = (
-        "You are a cyber threat reasoning engine. Given the trigger event, reason through "
-        "the likely attack pattern, identify MITRE ATT&CK techniques, predict lateral "
-        "movement, and return only valid JSON matching this exact structure:\n"
-        '{\n'
-        '  "suspected_group": str,\n'
-        '  "confidence_score": float,\n'
-        '  "ttps": [{"technique_id": str, "technique_name": str, "tactic": str, "confidence": float}],\n'
-        '  "compromised_asset": str,\n'
-        '  "predicted_next_target": str,\n'
-        '  "lateral_path": [str, str, str],\n'
-        '  "assets_at_risk": [str, str],\n'
-        '  "recommended_actions": [{"priority": int, "action": str, "urgency": str}],\n'
-        '  "summary": str\n'
-        "}\n"
-        'Use urgency values exactly from: "Immediate", "Within 1 hour", "Within 24 hours". '
-        f"Trigger event asset_type={req.asset_type}, source_ip={req.source_ip}."
+        f"Trigger Event Details:\n"
+        f"- Asset Type: {req.asset_type}\n"
+        f"- Source IP: {req.source_ip}\n\n"
+        f"Organization Environment Under Attack:\n"
+        f"- Organization Name: {org_name}\n"
+        f"- Cloud Provider: {cloud_provider}\n"
+        f"- Key Assets: {key_assets}\n"
+        f"- OS Stack: {os_stack}\n"
+        f"- Team Size: {team_size}\n"
+        f"- Industry: {industry}\n"
+        f"- Existing Security Tools: {existing_security_tools}\n"
+        f"{ad_info}"
+        f"- Architecture Description: {architecture_description}\n\n"
+        f"Based on the trigger event and organization environment above, reason through "
+        f"the likely attack pattern, identify MITRE ATT&CK techniques, and predict threat impact. "
+        f"You must specifically:\n"
+        f"- Reference the organization '{org_name}', cloud provider '{cloud_provider}', key assets {key_assets}, OS stack '{os_stack}', and industry '{industry}' explicitly.\n"
+        f"- Generate a blast radius (compromised_asset, predicted_next_target, lateral_path, assets_at_risk) that names the organization's actual assets from key assets: {key_assets} instead of generic names.\n"
+        f"- Generate lateral movement paths reflecting their actual cloud provider '{cloud_provider}' and OS stack '{os_stack}'.\n"
+        f"- Make recommended actions specific to their existing security tools '{existing_security_tools}'.\n"
+        f"- Generate a summary that feels written specifically for '{org_name}' in the '{industry}' industry.\n\n"
+        f"Return only valid JSON matching this exact structure:\n"
+        f"{{\n"
+        f'  "suspected_group": str,\n'
+        f'  "confidence_score": float,\n'
+        f'  "ttps": [{{"technique_id": str, "technique_name": str, "tactic": str, "confidence": float}}],\n'
+        f'  "compromised_asset": str,\n'
+        f'  "predicted_next_target": str,\n'
+        f'  "lateral_path": [str, str, str],\n'
+        f'  "assets_at_risk": [str, str],\n'
+        f'  "recommended_actions": [{{"priority": int, "action": str, "urgency": str}}],\n'
+        f'  "summary": str\n'
+        f"}}\n"
+        f"Requirements:\n"
+        f"- The lateral_path list must contain EXACTLY 3 elements.\n"
+        f"- The assets_at_risk list must contain EXACTLY 2 elements.\n"
+        f"- The recommended_actions list must contain EXACTLY 3 elements.\n"
+        f'- Use urgency values exactly from: "Immediate", "Within 1 hour", "Within 24 hours".'
     )
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Return only JSON. No markdown, no commentary."},
+            {
+                "role": "system",
+                "content": (
+                    "You are Ghost Protocol, an elite cyber threat intelligence engine embedded in a SOC war room. "
+                    "You have been given the exact infrastructure details of the organization under attack. "
+                    "Every answer must be specific to their environment — never use generic asset names. "
+                    "Return only valid JSON matching the exact schema provided."
+                )
+            },
             {"role": "user", "content": prompt},
         ],
         temperature=0.2,
@@ -252,6 +301,225 @@ def get_threat_feed():
             "total_critical": len(fallback_cves),
             "cves": fallback_cves
         }
+
+class CorrelateRequest(BaseModel):
+    cves: list[dict]
+    asset_type: str
+    user_environment: dict
+
+@app.post("/api/correlate-cves")
+def correlate_cves(req: CorrelateRequest):
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        return {
+            "relevant_cves": [],
+            "correlation_summary": "Correlation engine unavailable. Manual review recommended."
+        }
+
+    try:
+        client = OpenAI(
+            base_url="https://models.inference.ai.azure.com",
+            api_key=github_token,
+        )
+
+        env = req.user_environment
+        cloud_provider = env.get("cloud_provider", "")
+        os_stack = env.get("os_stack", "")
+        key_assets = env.get("key_assets", [])
+        industry = env.get("industry", "")
+
+        cves_details = []
+        for cve in req.cves:
+            cve_id = cve.get("cve_id", "")
+            description = cve.get("description", "")
+            cvss_score = cve.get("cvss_score", 9.0)
+            cves_details.append(f"- {cve_id} (Score: {cvss_score}): {description}")
+        cves_str = "\n".join(cves_details)
+
+        prompt = (
+            f"Active Attack Scenario:\n"
+            f"- Asset Type: {req.asset_type}\n\n"
+            f"Organization Infrastructure:\n"
+            f"- Cloud Provider: {cloud_provider}\n"
+            f"- OS Stack: {os_stack}\n"
+            f"- Key Assets: {key_assets}\n"
+            f"- Industry: {industry}\n\n"
+            f"Live CVEs:\n"
+            f"{cves_str}\n\n"
+            f"Based on the active attack scenario and organization infrastructure, identify which CVEs are most relevant. "
+            f"Return only valid JSON matching this exact structure:\n"
+            f"{{\n"
+            f'  "relevant_cves": [\n'
+            f'    {{\n'
+            f'      "cve_id": str,\n'
+            f'      "relevance_reason": str,\n'
+            f'      "risk_level": str,\n'
+            f'      "cvss_score": float\n'
+            f'    }}\n'
+            f'  ],\n'
+            f'  "correlation_summary": str\n'
+            f"}}\n"
+            f"Requirements:\n"
+            f'- relevance_reason must be exactly 1 sentence explaining why this CVE matters for this specific attack and organization.\n'
+            f'- risk_level must be exactly one of: "Directly Exploitable", "Lateral Risk", "Background Threat".\n'
+            f'- correlation_summary must be exactly 2 sentences summarizing which CVEs are most dangerous for this org right now.'
+        )
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a vulnerability correlation engine. Given a list of live CVEs and an organization's infrastructure, identify which CVEs are most relevant to the active attack scenario. Return only valid JSON."
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            response_format={"type": "json_object"},
+        )
+
+        content = response.choices[0].message.content
+        if not content:
+            return {
+                "relevant_cves": [],
+                "correlation_summary": "Correlation engine unavailable. Manual review recommended."
+            }
+
+        return json.loads(content)
+    except Exception:
+        return {
+            "relevant_cves": [],
+            "correlation_summary": "Correlation engine unavailable. Manual review recommended."
+        }
+
+class RiskProfileRequest(BaseModel):
+    org_name: str
+    industry: str
+    cloud_provider: str
+    os_stack: str
+    key_assets: list[str]
+    existing_security_tools: str
+    team_size: str
+    uses_active_directory: bool = False
+    active_directory: dict | None = None
+    architecture_description: str = ""
+
+@app.post("/api/risk-profile")
+def risk_profile(req: RiskProfileRequest):
+    github_token = os.getenv("GITHUB_TOKEN")
+    fallback_response = {
+        "risk_score": 75,
+        "risk_level": "HIGH",
+        "top_threats": ["Credential theft via cloud metadata", "Lateral movement through misconfigured IAM", "Insider threat via privileged access"],
+        "recommended_scenario": "canary_aws_token",
+        "recommendation_reason": "Cloud credential attacks are the most common entry point for your stack.",
+        "summary": "Your environment has significant exposure across cloud identity layers. Immediately audit IAM permissions and deploy deception assets on critical credential stores."
+    }
+    if not github_token:
+        return fallback_response
+
+    try:
+        client = OpenAI(
+            base_url="https://models.inference.ai.azure.com",
+            api_key=github_token,
+        )
+
+        ad_info = ""
+        if req.uses_active_directory and req.active_directory:
+            ad = req.active_directory
+            ad_info = f"Active Directory: Domain {ad.get('domain_name', '')}, {ad.get('domain_controller_count', '')} DCs, {ad.get('forest_type', '')}, {ad.get('hybrid_mode', '')}, {ad.get('privileged_account_count', '')} privileged accounts, {ad.get('service_account_count', '')} service accounts, trusts: {ad.get('trust_relationships', '')}, AD tools: {ad.get('ad_security_tools', '')}\n"
+
+        prompt = (
+            f"Analyse this organization and return a risk profile JSON:\n"
+            f"Org: {req.org_name}, Industry: {req.industry}, Cloud: {req.cloud_provider},\n"
+            f"OS Stack: {req.os_stack}, Key Assets: {req.key_assets}, Team Size: {req.team_size},\n"
+            f"Security Tools: {req.existing_security_tools}\n"
+            f"{ad_info}"
+            f"Architecture description: {req.architecture_description}\n\n"
+            f"Return exactly this JSON structure:\n"
+            f"{{\n"
+            f"  'risk_score': integer between 1 and 100,\n"
+            f"  'risk_level': one of 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW',\n"
+            f"  'top_threats': list of exactly 3 strings, each a specific threat relevant to their stack,\n"
+            f"  'recommended_scenario': one of exactly 'canary_aws_token', 'honeypot_ssh', 'fake_db_credentials', 'decoy_file' — pick whichever is most relevant to their cloud_provider and industry,\n"
+            f"  'recommendation_reason': string, 1 sentence explaining why that scenario fits their stack,\n"
+            f"  'summary': string, exactly 2 sentences — first names the biggest risk, second gives one immediate action. Write it addressed to the org by name.\n"
+            f"}}"
+        )
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are Ghost Protocol, an elite cyber threat intelligence engine. Given an organization's infrastructure profile, generate a concise risk assessment. Return only valid JSON."
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+            max_tokens=400,
+            response_format={"type": "json_object"},
+        )
+
+        content = response.choices[0].message.content
+        if not content:
+            return fallback_response
+        return json.loads(content)
+    except Exception:
+        return fallback_response
+
+class SuggestedQuestionsRequest(BaseModel):
+    brief_summary: str
+    suspected_group: str
+    asset_type: str
+    existing_security_tools: str
+    industry: str
+
+@app.post("/api/suggested-questions")
+def suggested_questions(req: SuggestedQuestionsRequest):
+    github_token = os.getenv("GITHUB_TOKEN")
+    fallback_response = {"questions": ["What lateral movement has occurred?", "Which assets should I isolate first?", "Should I notify my security team now?"]}
+    if not github_token:
+        return fallback_response
+
+    try:
+        client = OpenAI(
+            base_url="https://models.inference.ai.azure.com",
+            api_key=github_token,
+        )
+
+        prompt = (
+            f"A {req.asset_type} deception asset was triggered. Suspected group: {req.suspected_group}.\n"
+            f"The analyst works in {req.industry} and uses {req.existing_security_tools}.\n"
+            f"Brief summary: {req.brief_summary}\n\n"
+            f"Generate exactly 3 short follow-up questions an analyst would ask right now.\n"
+            f"Each question must be specific to their tools and industry — not generic.\n"
+            f"Return exactly this JSON:\n"
+            f"{{\n"
+            f"  'questions': [str, str, str]\n"
+            f"}}"
+        )
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are Ghost Protocol. Generate analyst follow-up questions based on a threat brief. Return only valid JSON."
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.5,
+            max_tokens=200,
+            response_format={"type": "json_object"},
+        )
+
+        content = response.choices[0].message.content
+        if not content:
+            return fallback_response
+        return json.loads(content)
+    except Exception:
+        return fallback_response
 
 if __name__ == "__main__":
     import uvicorn
