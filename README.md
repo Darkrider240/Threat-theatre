@@ -2,7 +2,7 @@
 
 A clinical, modern cyber deception and threat simulation environment designed for Security Operations Center (SOC) analysts to model, analyze, and enrich network breach alerts. Built using React 18, Tailwind CSS, FastAPI, and Azure AI-powered OpenAI orchestration models.
 
-Foundry IQ is simulated via a locally deployed MITRE ATT&CK knowledge base with agentic retrieval, making the project fully reproducible without cloud dependencies.
+Foundry IQ is simulated via a local FastAPI enrichment layer that maps events against the MITRE ATT&CK knowledge base with offline fallbacks, making the project highly reproducible without complex enterprise cloud dependencies.
 
 ---
 
