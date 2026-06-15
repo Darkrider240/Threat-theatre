@@ -17,14 +17,14 @@ graph TD
     end
 
     subgraph Backend [FastAPI Server - app.py]
-        API_Risk[/api/risk-profile]
-        API_Scen[/api/scenarios]
-        API_NVD[/api/threat-feed]
-        API_IP[/api/ip-reputation]
-        API_MITRE[/api/mitre-osint]
-        API_Time[/api/attack-timeline]
-        API_Save[/api/history/save]
-        API_AI[/api/analyze & /api/chat]
+        API_Risk["/api/risk-profile"]
+        API_Scen["/api/scenarios"]
+        API_NVD["/api/threat-feed"]
+        API_IP["/api/ip-reputation"]
+        API_MITRE["/api/mitre-osint"]
+        API_Time["/api/attack-timeline"]
+        API_Save["/api/history/save"]
+        API_AI["/api/analyze & /api/chat"]
     end
 
     subgraph Intelligence [Enrichment & AI Services]
