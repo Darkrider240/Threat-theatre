@@ -132,6 +132,10 @@
             const [isChatTyping, setIsChatTyping] = React.useState(false);
             const [suggestedQuestions, setSuggestedQuestions] = React.useState([]);
             const [questionsLoading, setQuestionsLoading] = React.useState(false);
+            const [ipReputation, setIpReputation] = React.useState(null);
+            const [mitreOsint, setMitreOsint] = React.useState(null);
+            const [attackTimeline, setAttackTimeline] = React.useState(null);
+            const [activeTab, setActiveTab] = React.useState('blast-radius');
             
             const chatEndRef = React.useRef(null);
 
@@ -174,6 +178,77 @@
                         ]);
                     }).finally(() => {
                         setQuestionsLoading(false);
+                    });
+
+                    // Fetch enrichment APIs in parallel
+                    Promise.allSettled([
+                        fetch(API_BASE + '/api/ip-reputation', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ ip_address: sourceIp })
+                        }).then(r => r.json()),
+                        
+                        fetch(API_BASE + '/api/mitre-osint', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                suspected_group: data.attacker_profile.suspected_group,
+                                technique_ids: data.attacker_profile.ttps.map(t => t.technique_id)
+                            })
+                        }).then(r => r.json()),
+
+                        fetch(API_BASE + '/api/attack-timeline', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                asset_type: scenario.asset_type,
+                                technique_ids: data.attacker_profile.ttps.map(t => t.technique_id),
+                                compromised_asset: data.blast_radius.compromised_asset,
+                                predicted_next_target: data.blast_radius.predicted_next_target,
+                                lateral_path: data.blast_radius.lateral_path,
+                                org_name: env.org_name,
+                                cloud_provider: env.cloud_provider
+                            })
+                        }).then(r => r.json()),
+
+                        fetch(API_BASE + '/api/history/save', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                event_id: data.event_id || "",
+                                asset_type: scenario.asset_type,
+                                display_name: scenario.display_name,
+                                org_name: env.org_name,
+                                suspected_group: data.attacker_profile.suspected_group,
+                                confidence_score: data.attacker_profile.confidence_score,
+                                compromised_asset: data.blast_radius.compromised_asset,
+                                predicted_next_target: data.blast_radius.predicted_next_target,
+                                risk_level: scenario.threat_level,
+                                summary: data.summary
+                            })
+                        }).then(r => r.json())
+                    ]).then(([ipRes, mitreRes, timelineRes, historyRes]) => {
+                        if (ipRes.status === 'fulfilled') setIpReputation(ipRes.value);
+                        if (mitreRes.status === 'fulfilled') setMitreOsint(mitreRes.value);
+                        if (timelineRes.status === 'fulfilled') setAttackTimeline(timelineRes.value);
+                        
+                        if (historyRes.status === 'fulfilled' && historyRes.value) {
+                            try {
+                                const localHistoryRaw = localStorage.getItem('gp_threat_history');
+                                let historyList = [];
+                                if (localHistoryRaw) {
+                                    historyList = JSON.parse(localHistoryRaw);
+                                    if (!Array.isArray(historyList)) historyList = [];
+                                }
+                                historyList.unshift(historyRes.value);
+                                if (historyList.length > 20) {
+                                    historyList = historyList.slice(0, 20);
+                                }
+                                localStorage.setItem('gp_threat_history', JSON.stringify(historyList));
+                            } catch (e) {
+                                console.error("History saving failed", e);
+                            }
+                        }
                     });
                 }).catch(console.error);
 
@@ -422,6 +497,77 @@
                             </div>
                             
                             <hr className="border-border mb-4" />
+                            <h2 className="text-[11px] uppercase tracking-[0.1em] text-text-muted font-semibold mb-2">Source IP Intelligence</h2>
+                            <hr className="border-border mb-4" />
+
+                            {ipReputation === null ? (
+                                <div className="text-[11px] font-mono text-text-muted mb-4">Querying AbuseIPDB...</div>
+                            ) : (
+                                <div className="space-y-4 mb-4">
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-[13px] font-mono text-accent">{ipReputation.ip_address}</span>
+                                        <span className={`text-[10px] font-mono border rounded-sm px-1.5 py-0.5 font-bold ${
+                                            ipReputation.threat_level === 'CRITICAL' ? 'bg-danger/10 border-danger/30 text-danger' :
+                                            ipReputation.threat_level === 'HIGH' ? 'bg-warning/10 border-warning/30 text-warning' :
+                                            ipReputation.threat_level === 'SUSPICIOUS' ? 'bg-warning/5 border-warning/20 text-warning' :
+                                            ipReputation.threat_level === 'CLEAN' ? 'bg-success/10 border-success/30 text-success' :
+                                            'bg-surface-raised border-border text-text-secondary'
+                                        }`}>
+                                            {ipReputation.threat_level}
+                                        </span>
+                                    </div>
+                                    
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <div>
+                                            <div className="text-[10px] text-text-muted font-semibold uppercase">Country</div>
+                                            <div className="text-[12px] font-mono text-text-primary truncate">{ipReputation.country_name}</div>
+                                        </div>
+                                        <div>
+                                            <div className="text-[10px] text-text-muted font-semibold uppercase">ISP</div>
+                                            <div className="text-[12px] font-mono text-text-primary truncate">{ipReputation.isp}</div>
+                                        </div>
+                                        <div>
+                                            <div className="text-[10px] text-text-muted font-semibold uppercase">Usage Type</div>
+                                            <div className="text-[12px] font-mono text-text-primary truncate">{ipReputation.usage_type}</div>
+                                        </div>
+                                        <div>
+                                            <div className="text-[10px] text-text-muted font-semibold uppercase">Reports</div>
+                                            <div className="text-[12px] font-mono text-text-primary">{ipReputation.total_reports}</div>
+                                        </div>
+                                        <div>
+                                            <div className="text-[10px] text-text-muted font-semibold uppercase">Last Seen</div>
+                                            <div className="text-[12px] font-mono text-text-primary">{ipReputation.last_reported_at}</div>
+                                        </div>
+                                        <div>
+                                            <div className="text-[10px] text-text-muted font-semibold uppercase">TOR Exit</div>
+                                            <div className="text-[12px] font-mono text-text-primary">{ipReputation.is_tor ? 'YES' : 'NO'}</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="space-y-1">
+                                        <div className="flex justify-between items-center">
+                                            <span className="text-[10px] text-text-muted font-semibold uppercase">Abuse Confidence</span>
+                                            <span className="text-[11px] font-mono text-text-primary">{ipReputation.abuse_confidence_score}%</span>
+                                        </div>
+                                        <div className="w-full h-1 bg-surface-raised rounded-full overflow-hidden">
+                                            <div className={`h-full ${
+                                                ipReputation.threat_level === 'CRITICAL' ? 'bg-danger' :
+                                                ipReputation.threat_level === 'HIGH' ? 'bg-warning' :
+                                                ipReputation.threat_level === 'SUSPICIOUS' ? 'bg-warning' :
+                                                'bg-success'
+                                            }`} style={{ width: `${ipReputation.abuse_confidence_score}%` }}></div>
+                                        </div>
+                                    </div>
+                                    
+                                    {ipReputation.abuse_confidence_score >= 40 && (
+                                        <div className="bg-surface-raised border-l-2 border-danger text-danger text-[11px] p-2">
+                                            ⚠ This IP has active abuse reports. Cross-reference with your firewall logs.
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            <hr className="border-border mb-4" />
                             <h2 className="text-[11px] uppercase tracking-[0.1em] text-text-muted font-semibold mb-2">Correlated CVEs</h2>
                             <div className="space-y-3 mb-4">
                                 {correlationData?.relevant_cves?.length > 0 ? (
@@ -460,82 +606,234 @@
                         </div>
 
                         {/* CENTER COLUMN */}
-                        <div className="w-[46%] h-full p-5 overflow-y-auto">
-                            <h2 className="text-[11px] uppercase tracking-[0.1em] text-text-muted font-semibold mb-2">Blast Radius</h2>
-                            <hr className="border-border mb-4" />
-
-                            <div className="flex items-center space-x-2 mb-6 overflow-x-auto pb-2">
-                                {/* Box 1 */}
-                                <div className="bg-surface-raised border border-border rounded-sm px-3.5 py-2.5 flex flex-col flex-shrink-0">
-                                    <span className="text-[9px] font-bold text-danger mb-1 tracking-wider">COMPROMISED</span>
-                                    <span className="text-[12px] font-mono text-text-primary whitespace-nowrap">{briefData.blast_radius?.compromised_asset || '--'}</span>
-                                </div>
-                                <span className="text-text-muted flex-shrink-0">→</span>
-                                {/* Box 2 */}
-                                <div className="bg-surface-raised border border-border rounded-sm px-3.5 py-2.5 flex flex-col flex-shrink-0">
-                                    <span className="text-[9px] font-bold text-warning mb-1 tracking-wider">PIVOT TARGET</span>
-                                    <span className="text-[12px] font-mono text-text-primary whitespace-nowrap">{briefData.blast_radius?.predicted_next_target || '--'}</span>
-                                </div>
-                                <span className="text-text-muted flex-shrink-0">→</span>
-                                {/* Box 3 */}
-                                <div className="bg-surface-raised border border-border rounded-sm px-3.5 py-2.5 flex flex-col flex-shrink-0">
-                                    <span className="text-[9px] font-bold text-text-muted mb-1 tracking-wider">CROWN JEWEL</span>
-                                    <span className="text-[12px] font-mono text-text-primary whitespace-nowrap">
-                                        {(briefData.blast_radius?.assets_at_risk && briefData.blast_radius.assets_at_risk.length > 0) 
-                                            ? briefData.blast_radius.assets_at_risk[briefData.blast_radius.assets_at_risk.length - 1] 
-                                            : '--'}
-                                    </span>
-                                </div>
+                        <div className="w-[46%] h-full flex flex-col bg-background border-r border-border">
+                            {/* Tab Bar */}
+                            <div className="flex-none h-9 border-b border-border flex bg-surface">
+                                {[
+                                    { id: 'blast-radius', label: 'BLAST RADIUS' },
+                                    { id: 'timeline', label: 'ATTACK TIMELINE' },
+                                    { id: 'osint', label: 'THREAT ACTOR OSINT' },
+                                    { id: 'actions', label: 'ACTIONS' }
+                                ].map(t => (
+                                    <button
+                                        key={t.id}
+                                        onClick={() => setActiveTab(t.id)}
+                                        className={`px-4 text-[12px] font-sans font-semibold tracking-wide border-b-2 cursor-pointer transition-all duration-150 ${
+                                            activeTab === t.id 
+                                                ? 'border-accent text-text-primary bg-background/20' 
+                                                : 'border-transparent text-text-secondary hover:text-text-primary'
+                                        }`}
+                                    >
+                                        {t.label}
+                                    </button>
+                                ))}
                             </div>
 
-                            <h2 className="text-[11px] uppercase tracking-[0.1em] text-text-muted font-semibold mb-2">Lateral Movement Path</h2>
-                            <div className="flex flex-col mb-6 ml-2">
-                                {briefData.blast_radius?.lateral_path?.map((step, idx, arr) => (
-                                    <div key={idx} className="flex flex-col">
-                                        <div className="flex items-center space-x-3">
-                                            <div className="w-5 h-5 bg-surface-raised border border-border flex items-center justify-center rounded-sm text-[11px] font-mono font-bold text-accent flex-shrink-0">
-                                                {idx + 1}
+                            {/* Tab Content */}
+                            <div className="flex-1 p-5 overflow-y-auto">
+                                {activeTab === 'blast-radius' && (
+                                    <div className="space-y-6">
+                                        <h2 className="text-[11px] uppercase tracking-[0.1em] text-text-muted font-semibold mb-2">Blast Radius</h2>
+                                        <hr className="border-border mb-4" />
+                                        
+                                        <div className="flex items-center space-x-2 mb-6 overflow-x-auto pb-2">
+                                            {/* Box 1 */}
+                                            <div className="bg-surface-raised border border-border rounded-sm px-3.5 py-2.5 flex flex-col flex-shrink-0">
+                                                <span className="text-[9px] font-bold text-danger mb-1 tracking-wider">COMPROMISED</span>
+                                                <span className="text-[12px] font-mono text-text-primary whitespace-nowrap">{briefData.blast_radius?.compromised_asset || '--'}</span>
                                             </div>
-                                            <div className="text-[13px] text-text-secondary">{step}</div>
+                                            <span className="text-text-muted flex-shrink-0">→</span>
+                                            {/* Box 2 */}
+                                            <div className="bg-surface-raised border border-border rounded-sm px-3.5 py-2.5 flex flex-col flex-shrink-0">
+                                                <span className="text-[9px] font-bold text-warning mb-1 tracking-wider">PIVOT TARGET</span>
+                                                <span className="text-[12px] font-mono text-text-primary whitespace-nowrap">{briefData.blast_radius?.predicted_next_target || '--'}</span>
+                                            </div>
+                                            <span className="text-text-muted flex-shrink-0">→</span>
+                                            {/* Box 3 */}
+                                            <div className="bg-surface-raised border border-border rounded-sm px-3.5 py-2.5 flex flex-col flex-shrink-0">
+                                                <span className="text-[9px] font-bold text-text-muted mb-1 tracking-wider">CROWN JEWEL</span>
+                                                <span className="text-[12px] font-mono text-text-primary whitespace-nowrap">
+                                                    {(briefData.blast_radius?.assets_at_risk && briefData.blast_radius.assets_at_risk.length > 0) 
+                                                        ? briefData.blast_radius.assets_at_risk[briefData.blast_radius.assets_at_risk.length - 1] 
+                                                        : '--'}
+                                                </span>
+                                            </div>
                                         </div>
-                                        {idx < arr.length - 1 && (
-                                            <div className="h-4 border-l border-border ml-[9px] my-1"></div>
+
+                                        <h2 className="text-[11px] uppercase tracking-[0.1em] text-text-muted font-semibold mb-2">Lateral Movement Path</h2>
+                                        <div className="flex flex-col mb-6 ml-2">
+                                            {briefData.blast_radius?.lateral_path?.map((step, idx, arr) => (
+                                                <div key={idx} className="flex flex-col">
+                                                    <div className="flex items-center space-x-3">
+                                                        <div className="w-5 h-5 bg-surface-raised border border-border flex items-center justify-center rounded-sm text-[11px] font-mono font-bold text-accent flex-shrink-0">
+                                                            {idx + 1}
+                                                        </div>
+                                                        <div className="text-[13px] text-text-secondary">{step}</div>
+                                                    </div>
+                                                    {idx < arr.length - 1 && (
+                                                        <div className="h-4 border-l border-border ml-[9px] my-1"></div>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        <h2 className="text-[11px] uppercase tracking-[0.1em] text-text-muted font-semibold mb-2">Assets At Risk</h2>
+                                        <div className="flex flex-wrap gap-2">
+                                            {briefData.blast_radius?.assets_at_risk?.map((asset, idx) => (
+                                                <div key={idx} className="border border-danger text-danger text-[11px] font-mono rounded-sm px-2 py-0.5">
+                                                    {asset}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {activeTab === 'timeline' && (
+                                    <div className="space-y-4">
+                                        {attackTimeline === null ? (
+                                            <div className="text-[11px] font-mono text-text-muted">Reconstructing attack timeline...</div>
+                                        ) : !attackTimeline.timeline || attackTimeline.timeline.length === 0 ? (
+                                            <div className="text-[11px] text-text-muted">Timeline data unavailable.</div>
+                                        ) : (
+                                            <div className="space-y-4">
+                                                <div className="flex justify-between items-center text-[11px] font-mono">
+                                                    <span className="text-text-muted uppercase tracking-wider">EST. DWELL TIME: {attackTimeline.total_dwell_time}</span>
+                                                    <span className="text-warning uppercase tracking-wider">EXFIL WINDOW: {attackTimeline.exfiltration_window}</span>
+                                                </div>
+                                                <hr className="border-border" />
+                                                
+                                                <div className="divide-y divide-border/50">
+                                                    {attackTimeline.timeline.map((evt, idx) => {
+                                                        const p = evt.phase.toLowerCase();
+                                                        let phaseColor = 'bg-surface-raised text-text-secondary border-border';
+                                                        if (p.includes('access') || p.includes('execution') || p.includes('exfiltration')) {
+                                                            phaseColor = 'bg-danger/10 text-danger border-danger/20';
+                                                        } else if (p.includes('persistence') || p.includes('escalation')) {
+                                                            phaseColor = 'bg-warning/10 text-warning border-warning/20';
+                                                        } else if (p.includes('lateral') || p.includes('collection')) {
+                                                            phaseColor = 'bg-warning/5 text-warning border-warning/10';
+                                                        }
+                                                        
+                                                        let borderLeftColor = 'border-l-text-muted';
+                                                        const sev = evt.severity.toLowerCase();
+                                                        if (sev === 'critical') borderLeftColor = 'border-l-danger';
+                                                        else if (sev === 'high') borderLeftColor = 'border-l-warning';
+                                                        else if (sev === 'medium') borderLeftColor = 'border-l-warning/70';
+
+                                                        return (
+                                                            <div key={idx} className={`flex items-center justify-between py-3 border-l-2 pl-3 ${borderLeftColor} gap-3`}>
+                                                                <div className="flex items-center space-x-3 min-w-0 flex-1">
+                                                                    <span className="text-[12px] font-mono text-accent font-bold w-[60px] flex-shrink-0">{evt.offset}</span>
+                                                                    <span className={`text-[10px] font-mono border rounded-sm px-1.5 py-0.5 whitespace-nowrap flex-shrink-0 ${phaseColor}`}>
+                                                                        {evt.phase}
+                                                                    </span>
+                                                                    <span className="text-[13px] text-text-primary truncate">{evt.event}</span>
+                                                                </div>
+                                                                {evt.mitre_technique && (
+                                                                    <span className="text-[11px] font-mono text-text-muted flex-shrink-0">{evt.mitre_technique}</span>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
                                         )}
                                     </div>
-                                ))}
-                            </div>
+                                )}
 
-                            <h2 className="text-[11px] uppercase tracking-[0.1em] text-text-muted font-semibold mb-2">Assets At Risk</h2>
-                            <div className="flex flex-wrap gap-2 mb-6">
-                                {briefData.blast_radius?.assets_at_risk?.map((asset, idx) => (
-                                    <div key={idx} className="border border-danger text-danger text-[11px] font-mono rounded-sm px-2 py-0.5">
-                                        {asset}
+                                {activeTab === 'osint' && (
+                                    <div className="space-y-4">
+                                        {mitreOsint === null ? (
+                                            <div className="text-[11px] font-mono text-text-muted">Querying MITRE ATT&amp;CK database...</div>
+                                        ) : (
+                                            <div className="space-y-4">
+                                                <div>
+                                                    <h3 className="text-[16px] font-semibold text-text-primary font-sans">{mitreOsint.group_name}</h3>
+                                                    {mitreOsint.aliases && mitreOsint.aliases.length > 0 && (
+                                                        <div className="flex flex-wrap gap-1.5 mt-2">
+                                                            {mitreOsint.aliases.map((a, i) => (
+                                                                <span key={i} className="border border-border text-text-muted px-1.5 py-0.5 rounded-sm text-[11px] font-mono">
+                                                                    {a}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div>
+                                                        <div className="text-[10px] text-text-muted font-semibold uppercase">Motivation</div>
+                                                        <div className={`text-[12px] font-mono font-semibold ${
+                                                            mitreOsint.motivation === 'Financial' ? 'text-warning' :
+                                                            mitreOsint.motivation === 'Espionage' ? 'text-danger' :
+                                                            mitreOsint.motivation === 'Hacktivism' ? 'text-accent' :
+                                                            mitreOsint.motivation === 'Destruction' ? 'text-danger' :
+                                                            'text-text-secondary'
+                                                        }`}>{mitreOsint.motivation}</div>
+                                                    </div>
+                                                    <div>
+                                                        <div className="text-[10px] text-text-muted font-semibold uppercase">Origin</div>
+                                                        <div className="text-[12px] text-text-primary">{mitreOsint.origin}</div>
+                                                    </div>
+                                                    <div className="col-span-2">
+                                                        <div className="text-[10px] text-text-muted font-semibold uppercase">Targets</div>
+                                                        <div className="text-[12px] text-text-secondary">{mitreOsint.typical_targets}</div>
+                                                    </div>
+                                                </div>
+                                                
+                                                <hr className="border-border" />
+                                                <div>
+                                                    <div className="text-[11px] font-semibold text-text-muted tracking-wider uppercase font-sans mb-1">KNOWN CAMPAIGNS</div>
+                                                    <p className="text-[13px] text-text-secondary leading-relaxed">{mitreOsint.known_campaigns}</p>
+                                                </div>
+                                                
+                                                <hr className="border-border" />
+                                                <div>
+                                                    <div className="text-[11px] font-semibold text-text-muted tracking-wider uppercase font-sans mb-1">WHY THIS GROUP</div>
+                                                    <p className="text-[13px] text-text-secondary italic leading-relaxed">{mitreOsint.why_relevant}</p>
+                                                </div>
+                                                
+                                                <div className="pt-2">
+                                                    <a 
+                                                        href="https://attack.mitre.org/groups/" 
+                                                        target="_blank" 
+                                                        rel="noopener noreferrer" 
+                                                        className="text-[11px] text-accent hover:text-accent-hover hover:underline transition-colors font-mono"
+                                                    >
+                                                        View on MITRE ATT&amp;CK →
+                                                    </a>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
-                                ))}
-                            </div>
+                                )}
 
-                            <hr className="border-border mb-4" />
-                            <h2 className="text-[11px] uppercase tracking-[0.1em] text-text-muted font-semibold mb-2">Recommended Actions</h2>
-                            <div className="flex flex-col border-t border-border">
-                                {briefData.recommended_actions?.map((act, idx) => {
-                                    const pBadge = priorityBadgeColors[act.priority] || priorityBadgeColors[3];
-                                    const uColor = urgencyColors[act.urgency] || 'text-text-muted';
-                                    return (
-                                        <div key={idx} className="flex items-center justify-between py-3 border-b border-border gap-4">
-                                            <div className="flex items-center space-x-3 flex-shrink-0">
-                                                <div className={`w-6 h-5 rounded-sm flex items-center justify-center text-[11px] font-mono font-bold ${pBadge}`}>
-                                                    P{act.priority}
-                                                </div>
-                                                <div className={`text-[11px] font-mono whitespace-nowrap ${uColor}`}>
-                                                    {act.urgency}
-                                                </div>
-                                            </div>
-                                            <div className="text-[13px] text-text-primary text-right flex-1">
-                                                {act.action}
-                                            </div>
+                                {activeTab === 'actions' && (
+                                    <div className="space-y-4">
+                                        <h2 className="text-[11px] uppercase tracking-[0.1em] text-text-muted font-semibold mb-2">Recommended Actions</h2>
+                                        <div className="flex flex-col border-t border-border">
+                                            {briefData.recommended_actions?.map((act, idx) => {
+                                                const pBadge = priorityBadgeColors[act.priority] || priorityBadgeColors[3];
+                                                const uColor = urgencyColors[act.urgency] || 'text-text-muted';
+                                                return (
+                                                    <div key={idx} className="flex items-center justify-between py-3 border-b border-border gap-4">
+                                                        <div className="flex items-center space-x-3 flex-shrink-0">
+                                                            <div className={`w-6 h-5 rounded-sm flex items-center justify-center text-[11px] font-mono font-bold ${pBadge}`}>
+                                                                P{act.priority}
+                                                            </div>
+                                                            <div className={`text-[11px] font-mono whitespace-nowrap ${uColor}`}>
+                                                                {act.urgency}
+                                                            </div>
+                                                        </div>
+                                                        <div className="text-[13px] text-text-primary text-right flex-1">
+                                                            {act.action}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
                                         </div>
-                                    );
-                                })}
+                                    </div>
+                                )}
                             </div>
                         </div>
 

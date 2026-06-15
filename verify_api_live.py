@@ -156,4 +156,60 @@ print("Suggested Questions:", questions_data.get("questions"))
 assert "questions" in questions_data
 assert len(questions_data.get("questions", [])) == 3
 
+print("\n9. Testing POST /api/ip-reputation...")
+res = requests.post(f"{BASE_URL}/api/ip-reputation", json={"ip_address": "8.8.8.8"})
+print(res.status_code)
+assert res.status_code == 200
+ip_data = res.json()
+print("IP:", ip_data.get("ip_address"), "Threat Level:", ip_data.get("threat_level"))
+assert "abuse_confidence_score" in ip_data
+
+print("\n10. Testing POST /api/mitre-osint...")
+res = requests.post(f"{BASE_URL}/api/mitre-osint", json={"suspected_group": "APT29", "technique_ids": ["T1566", "T1078"]})
+print(res.status_code)
+assert res.status_code == 200
+osint_data = res.json()
+print("Group:", osint_data.get("group_name"), "Motivation:", osint_data.get("motivation"))
+assert "motivation" in osint_data
+
+print("\n11. Testing POST /api/attack-timeline...")
+timeline_payload = {
+    "asset_type": "canary_aws_token",
+    "technique_ids": ["T1566", "T1078"],
+    "compromised_asset": "Apex RDS Primary",
+    "predicted_next_target": "S3 Customer Docs",
+    "lateral_path": ["DMZ Jumpbox", "Prod VPC", "AD Domain Controller"],
+    "org_name": "Apex Finance",
+    "cloud_provider": "AWS"
+}
+res = requests.post(f"{BASE_URL}/api/attack-timeline", json=timeline_payload)
+print(res.status_code)
+assert res.status_code == 200
+timeline_data = res.json()
+print("Total Dwell Time:", timeline_data.get("total_dwell_time"))
+print("Timeline event count:", len(timeline_data.get("timeline", [])))
+assert "timeline" in timeline_data
+
+print("\n12. Testing POST /api/history/save...")
+history_payload = {
+    "event_id": "test_event_12345678",
+    "asset_type": "canary_aws_token",
+    "display_name": "AWS Canary Token Breach",
+    "org_name": "Apex Finance",
+    "suspected_group": "APT29",
+    "confidence_score": 0.85,
+    "compromised_asset": "Apex RDS Primary",
+    "predicted_next_target": "S3 Customer Docs",
+    "risk_level": "CRITICAL",
+    "summary": "This is a test summary."
+}
+res = requests.post(f"{BASE_URL}/api/history/save", json=history_payload)
+print(res.status_code)
+assert res.status_code == 200
+history_data = res.json()
+print("History Entry ID:", history_data.get("id"), "Saved At:", history_data.get("saved_at"))
+assert history_data.get("id") == "hist_test_eve"
+assert "saved_at" in history_data
+
 print("\nALL LIVE API VERIFICATION TESTS PASSED SUCCESSFULLY!")
+

@@ -521,6 +521,298 @@ def suggested_questions(req: SuggestedQuestionsRequest):
     except Exception:
         return fallback_response
 
+class IPReputationRequest(BaseModel):
+    ip_address: str
+
+@app.post("/api/ip-reputation")
+def ip_reputation(req: IPReputationRequest):
+    fallback = {
+        "ip_address": req.ip_address,
+        "abuse_confidence_score": 0,
+        "country_code": "XX",
+        "country_name": "Unknown",
+        "isp": "Unknown ISP",
+        "domain": "unknown",
+        "usage_type": "Unknown",
+        "total_reports": 0,
+        "last_reported_at": "Never",
+        "is_tor": False,
+        "threat_level": "UNKNOWN",
+        "error": "Reputation service unavailable"
+    }
+    
+    abuseipdb_key = os.getenv("ABUSEIPDB_KEY")
+    if not abuseipdb_key:
+        return fallback
+
+    try:
+        url = "https://api.abuseipdb.com/api/v2/check"
+        params = {
+            "ipAddress": req.ip_address,
+            "maxAgeInDays": 90,
+            "verbose": True
+        }
+        headers = {
+            "Key": abuseipdb_key,
+            "Accept": "application/json"
+        }
+        
+        response = requests.get(url, params=params, headers=headers, timeout=6.0)
+        if response.status_code != 200:
+            return fallback
+
+        data = response.json().get("data", {})
+        
+        last_reported = data.get("lastReportedAt")
+        if last_reported:
+            last_reported_at = str(last_reported)[:10]
+        else:
+            last_reported_at = "Never"
+            
+        abuse_confidence_score = int(data.get("abuseConfidenceScore", 0))
+        
+        if abuse_confidence_score >= 75:
+            threat_level = "CRITICAL"
+        elif abuse_confidence_score >= 40:
+            threat_level = "HIGH"
+        elif abuse_confidence_score >= 10:
+            threat_level = "SUSPICIOUS"
+        else:
+            threat_level = "CLEAN"
+            
+        return {
+            "ip_address": data.get("ipAddress", req.ip_address),
+            "abuse_confidence_score": abuse_confidence_score,
+            "country_code": data.get("countryCode", "XX"),
+            "country_name": data.get("countryName", "Unknown"),
+            "isp": data.get("isp", "Unknown ISP"),
+            "domain": data.get("domain", "unknown"),
+            "usage_type": data.get("usageType", "Unknown"),
+            "total_reports": int(data.get("totalReports", 0)),
+            "last_reported_at": last_reported_at,
+            "is_tor": bool(data.get("isTor", False)),
+            "threat_level": threat_level
+        }
+    except Exception:
+        return fallback
+
+class MitreOsintRequest(BaseModel):
+    suspected_group: str
+    technique_ids: list[str]
+
+@app.post("/api/mitre-osint")
+def mitre_osint(req: MitreOsintRequest):
+    fallback = {
+        "group_name": req.suspected_group,
+        "aliases": [],
+        "motivation": "Unknown",
+        "origin": "Unknown",
+        "typical_targets": "Unknown",
+        "known_campaigns": "Insufficient data.",
+        "why_relevant": "Pattern matches observed TTPs."
+    }
+
+    try:
+        url = "https://raw.githubusercontent.com/mitre/cti/master/enterprise-attack/enterprise-attack.json"
+        res = requests.get(url, timeout=10.0)
+        if res.status_code != 200:
+            raise Exception("CTI fetch failed")
+        
+        objects = res.json().get("objects", [])
+        groups = []
+        for obj in objects:
+            if obj.get("type") == "intrusion-set":
+                groups.append({
+                    "name": obj.get("name", ""),
+                    "aliases": obj.get("aliases", []),
+                    "description": obj.get("description", "")[:300]
+                })
+
+        matched_group = None
+        search_term = req.suspected_group.lower()
+        for g in groups:
+            name_match = search_term in g["name"].lower() or g["name"].lower() in search_term
+            alias_match = any(search_term in a.lower() or a.lower() in search_term for a in g["aliases"])
+            if name_match or alias_match:
+                matched_group = g
+                break
+
+        github_token = os.getenv("GITHUB_TOKEN")
+        if not github_token:
+            if matched_group:
+                return {
+                    "group_name": matched_group["name"],
+                    "aliases": matched_group["aliases"],
+                    "motivation": "Unknown",
+                    "origin": "Unknown",
+                    "typical_targets": "Unknown",
+                    "known_campaigns": matched_group["description"],
+                    "why_relevant": "Pattern matches observed TTPs."
+                }
+            return fallback
+
+        client = OpenAI(
+            base_url="https://models.inference.ai.azure.com",
+            api_key=github_token,
+        )
+
+        if matched_group:
+            prompt = (
+                f"Threat actor: {matched_group['name']}\n"
+                f"Known aliases: {matched_group['aliases']}\n"
+                f"MITRE description: {matched_group['description']}\n"
+                f"Observed techniques in this incident: {req.technique_ids}\n\n"
+                f"Return exactly this JSON:\n"
+                f"{{\n"
+                f"  'group_name': str,\n"
+                f"  'aliases': list of str,\n"
+                f"  'motivation': str (one of: Financial, Espionage, Hacktivism, Destruction, Unknown),\n"
+                f"  'origin': str (suspected nation-state or origin, or Unknown),\n"
+                f"  'typical_targets': str (1 sentence),\n"
+                f"  'known_campaigns': str (1-2 sentences from the description, summarised),\n"
+                f"  'why_relevant': str (1 sentence explaining why this group matches the observed techniques)\n"
+                f"}}"
+            )
+        else:
+            prompt = (
+                f"Threat actor: {req.suspected_group}\n"
+                f"Observed techniques in this incident: {req.technique_ids}\n\n"
+                f"Return exactly this JSON:\n"
+                f"{{\n"
+                f"  'group_name': str,\n"
+                f"  'aliases': list of str,\n"
+                f"  'motivation': str (one of: Financial, Espionage, Hacktivism, Destruction, Unknown),\n"
+                f"  'origin': str (suspected nation-state or origin, or Unknown),\n"
+                f"  'typical_targets': str (1 sentence),\n"
+                f"  'known_campaigns': str (1-2 sentences from the description, summarised),\n"
+                f"  'why_relevant': str (1 sentence explaining why this group matches the observed techniques)\n"
+                f"}}"
+            )
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a threat intelligence analyst. Given a threat actor group profile and their known MITRE techniques, provide a concise intel summary. Return only valid JSON."
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=350,
+            response_format={"type": "json_object"},
+        )
+
+        content = response.choices[0].message.content
+        if not content:
+            return fallback
+        return json.loads(content)
+    except Exception:
+        return fallback
+
+class TimelineRequest(BaseModel):
+    asset_type: str
+    technique_ids: list[str]
+    compromised_asset: str
+    predicted_next_target: str
+    lateral_path: list[str]
+    org_name: str
+    cloud_provider: str
+
+@app.post("/api/attack-timeline")
+def attack_timeline(req: TimelineRequest):
+    fallback = {
+        "timeline": [],
+        "total_dwell_time": "Unknown",
+        "exfiltration_window": "Unknown"
+    }
+
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        return fallback
+
+    try:
+        client = OpenAI(
+            base_url="https://models.inference.ai.azure.com",
+            api_key=github_token,
+        )
+
+        prompt = (
+            f"Reconstruct the attack timeline for this incident:\n"
+            f"Asset triggered: {req.asset_type}\n"
+            f"Compromised asset: {req.compromised_asset}\n"
+            f"Predicted next target: {req.predicted_next_target}\n"
+            f"Lateral movement path: {req.lateral_path}\n"
+            f"MITRE techniques: {req.technique_ids}\n"
+            f"Target org: {req.org_name} on {req.cloud_provider}\n\n"
+            f"Return exactly this JSON:\n"
+            f"{{\n"
+            f"  'timeline': [\n"
+            f"    {{\n"
+            f"      'offset': str (e.g. 'T+0s', 'T+30s', 'T+2m', 'T+15m', 'T+1h'),\n"
+            f"      'event': str (what the attacker did, specific and technical),\n"
+            f"      'phase': str (one of: Initial Access, Execution, Persistence, Privilege Escalation, Defense Evasion, Credential Access, Discovery, Lateral Movement, Collection, Exfiltration),\n"
+            f"      'severity': str (one of: low, medium, high, critical),\n"
+            f"      'mitre_technique': str (technique ID if applicable, else null)\n"
+            f"    }}\n"
+            f"  ],\n"
+            f"  'total_dwell_time': str (estimated total attack window e.g. '2-4 hours'),\n"
+            f"  'exfiltration_window': str (when data exfiltration likely begins e.g. 'T+45m')\n"
+            f"}}\n"
+            f"Generate exactly 8 timeline events. Make them specific to the asset_type and cloud_provider."
+        )
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a cyber attack timeline reconstruction engine. Given attack details, generate a realistic second-by-second to minute-by-minute timeline of the attack as it unfolds. Return only valid JSON."
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+            max_tokens=800,
+            response_format={"type": "json_object"},
+        )
+
+        content = response.choices[0].message.content
+        if not content:
+            return fallback
+        return json.loads(content)
+    except Exception:
+        return fallback
+
+class HistoryEntryRequest(BaseModel):
+    event_id: str
+    asset_type: str
+    display_name: str
+    org_name: str
+    suspected_group: str
+    confidence_score: float
+    compromised_asset: str
+    predicted_next_target: str
+    risk_level: str
+    summary: str
+
+@app.post("/api/history/save")
+def save_history(req: HistoryEntryRequest):
+    entry = {
+        "event_id": req.event_id,
+        "asset_type": req.asset_type,
+        "display_name": req.display_name,
+        "org_name": req.org_name,
+        "suspected_group": req.suspected_group,
+        "confidence_score": req.confidence_score,
+        "compromised_asset": req.compromised_asset,
+        "predicted_next_target": req.predicted_next_target,
+        "risk_level": req.risk_level,
+        "summary": req.summary,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "id": f"hist_{req.event_id[:8]}"
+    }
+    return entry
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

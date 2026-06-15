@@ -111,6 +111,8 @@
             const [time, setTime] = React.useState('');
             const [isRefreshing, setIsRefreshing] = React.useState(false);
             const [riskProfile, setRiskProfile] = React.useState(null);
+            const [threatHistory, setThreatHistory] = React.useState([]);
+            const [rightTab, setRightTab] = React.useState('cve-feed');
 
             React.useEffect(() => {
                 const profileRaw = localStorage.getItem('gp_risk_profile');
@@ -122,6 +124,19 @@
                     }
                 } else {
                     setRiskProfile(null);
+                }
+
+                // Read threat history from localStorage on load
+                const historyRaw = localStorage.getItem('gp_threat_history');
+                if (historyRaw) {
+                    try {
+                        const parsed = JSON.parse(historyRaw);
+                        setThreatHistory(Array.isArray(parsed) ? parsed : []);
+                    } catch (e) {
+                        setThreatHistory([]);
+                    }
+                } else {
+                    setThreatHistory([]);
                 }
             }, []);
 
@@ -352,66 +367,163 @@
 
                         {/* RIGHT COLUMN */}
                         <div className="w-[42%] h-full border-l border-border p-6 flex flex-col overflow-y-auto">
-                            <div className="flex justify-between items-end mb-3">
-                                <h2 className="text-[11px] uppercase tracking-[0.15em] text-text-muted font-semibold">Live CVE Intelligence</h2>
-                                <div className="text-[11px] font-mono text-text-muted">
-                                    {threatFeed.last_updated ? formatDateStr(threatFeed.last_updated) : '--'}
-                                </div>
+                            {/* Tab Bar */}
+                            <div className="flex border-b border-border h-9 items-center mb-4 flex-none">
+                                <button 
+                                    onClick={() => setRightTab('cve-feed')}
+                                    className={`px-4 h-full text-[12px] font-sans font-semibold tracking-wider border-b-2 transition-all cursor-pointer ${
+                                        rightTab === 'cve-feed' 
+                                            ? 'border-accent text-accent' 
+                                            : 'border-transparent text-text-secondary hover:text-text-primary'
+                                    }`}
+                                >
+                                    LIVE CVE INTELLIGENCE
+                                </button>
+                                <button 
+                                    onClick={() => setRightTab('threat-history')}
+                                    className={`px-4 h-full text-[12px] font-sans font-semibold tracking-wider border-b-2 transition-all cursor-pointer flex items-center space-x-2 ${
+                                        rightTab === 'threat-history' 
+                                            ? 'border-accent text-accent' 
+                                            : 'border-transparent text-text-secondary hover:text-text-primary'
+                                    }`}
+                                >
+                                    <span>THREAT HISTORY</span>
+                                    {threatHistory.length > 0 && (
+                                        <span className="w-4 h-4 rounded-full bg-accent text-white flex items-center justify-center text-[9px] font-bold">
+                                            {threatHistory.length}
+                                        </span>
+                                    )}
+                                </button>
                             </div>
-                            <hr className="border-border mb-2" />
 
-                            {/* CVE List */}
-                            <div className="flex-1 overflow-y-auto pr-2 mb-4 space-y-0">
-                                {threatFeed.cves && threatFeed.cves.length > 0 ? (
-                                    threatFeed.cves.map((cve, idx) => (
-                                        <div 
-                                            key={cve.cve_id || idx} 
-                                            className="flex items-start py-3 border-b border-border animate-fade-in-row"
-                                            style={{ animationDelay: `${idx * 80}ms` }}
-                                        >
-                                            <div className="flex-shrink-0 mr-3 mt-0.5">
-                                                <span className={`inline-block px-1.5 py-0.5 rounded text-[12px] font-mono font-bold ${getCvssBadgeClasses(cve.cvss_score)}`}>
-                                                    {cve.cvss_score.toFixed(1)}
-                                                </span>
-                                            </div>
-                                            <div className="flex-1 min-w-0 pr-3">
-                                                <a 
-                                                    href={cve.url} 
-                                                    target="_blank" 
-                                                    rel="noopener noreferrer"
-                                                    className="text-[12px] font-mono text-accent hover:text-accent-hover hover:underline truncate block mb-1"
+                            {/* Tab Content */}
+                            {rightTab === 'cve-feed' ? (
+                                <React.Fragment>
+                                    <div className="flex justify-between items-end mb-3">
+                                        <h2 className="text-[11px] uppercase tracking-[0.15em] text-text-muted font-semibold">Live CVE Intelligence</h2>
+                                        <div className="text-[11px] font-mono text-text-muted">
+                                            {threatFeed.last_updated ? formatDateStr(threatFeed.last_updated) : '--'}
+                                        </div>
+                                    </div>
+                                    <hr className="border-border mb-2" />
+
+                                    {/* CVE List */}
+                                    <div className="flex-1 overflow-y-auto pr-2 mb-4 space-y-0">
+                                        {threatFeed.cves && threatFeed.cves.length > 0 ? (
+                                            threatFeed.cves.map((cve, idx) => (
+                                                <div 
+                                                    key={cve.cve_id || idx} 
+                                                    className="flex items-start py-3 border-b border-border animate-fade-in-row"
+                                                    style={{ animationDelay: `${idx * 80}ms` }}
                                                 >
-                                                    {cve.cve_id}
-                                                </a>
-                                                <p className="text-[12px] text-text-secondary line-clamp-2 leading-relaxed">
-                                                    {cve.description}
-                                                </p>
+                                                    <div className="flex-shrink-0 mr-3 mt-0.5">
+                                                        <span className={`inline-block px-1.5 py-0.5 rounded text-[12px] font-mono font-bold ${getCvssBadgeClasses(cve.cvss_score)}`}>
+                                                            {cve.cvss_score.toFixed(1)}
+                                                        </span>
+                                                    </div>
+                                                    <div className="flex-1 min-w-0 pr-3">
+                                                        <a 
+                                                            href={cve.url} 
+                                                            target="_blank" 
+                                                            rel="noopener noreferrer"
+                                                            className="text-[12px] font-mono text-accent hover:text-accent-hover hover:underline truncate block mb-1"
+                                                        >
+                                                            {cve.cve_id}
+                                                        </a>
+                                                        <p className="text-[12px] text-text-secondary line-clamp-2 leading-relaxed">
+                                                            {cve.description}
+                                                        </p>
+                                                    </div>
+                                                    <div className="flex-shrink-0 text-[11px] font-mono text-text-muted mt-1">
+                                                        {formatDateStr(cve.published)}
+                                                    </div>
+                                                </div>
+                                            ))
+                                        ) : (
+                                            <div className="py-8 text-center text-[12px] text-text-muted font-mono">
+                                                No critical CVEs retrieved or still loading...
                                             </div>
-                                            <div className="flex-shrink-0 text-[11px] font-mono text-text-muted mt-1">
-                                                {formatDateStr(cve.published)}
+                                        )}
+                                    </div>
+
+                                    {/* Controls */}
+                                    <div className="mt-auto pt-2 border-t border-border/50 flex flex-col items-center flex-none">
+                                        <button 
+                                            onClick={handleRefresh}
+                                            disabled={isRefreshing}
+                                            className="w-full bg-transparent border border-border hover:border-text-secondary text-text-secondary text-[11px] font-mono py-2 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed mb-3"
+                                        >
+                                            {isRefreshing ? "REFRESHING..." : "REFRESH INTEL"}
+                                        </button>
+                                        <span className="text-[10px] text-text-muted">
+                                            Live data sourced from National Vulnerability Database (NVD)
+                                        </span>
+                                    </div>
+                                </React.Fragment>
+                            ) : (
+                                <div className="flex-1 flex flex-col overflow-hidden">
+                                    {threatHistory.length === 0 ? (
+                                        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+                                            <span className="text-[32px] text-text-muted mb-3">🛡️</span>
+                                            <h3 className="text-[13px] text-text-secondary font-semibold mb-1">No incidents recorded yet.</h3>
+                                            <p className="text-[12px] text-text-muted">Run a threat scenario to begin building your incident history.</p>
+                                        </div>
+                                    ) : (
+                                        <div className="flex-1 flex flex-col overflow-hidden">
+                                            <div className="flex justify-between items-center mb-3">
+                                                <span className="text-[11px] font-mono text-text-muted">{threatHistory.length} INCIDENTS RECORDED</span>
+                                                <button 
+                                                    onClick={() => {
+                                                        localStorage.removeItem('gp_threat_history');
+                                                        setThreatHistory([]);
+                                                    }}
+                                                    className="text-[10px] text-text-muted hover:text-text-primary transition-colors cursor-pointer"
+                                                >
+                                                    CLEAR ALL
+                                                </button>
+                                            </div>
+                                            <hr className="border-border mb-3" />
+                                            <div className="flex-1 overflow-y-auto pr-2 space-y-0">
+                                                {threatHistory.map((entry, idx) => (
+                                                    <div 
+                                                        key={entry.id || idx}
+                                                        onClick={() => {
+                                                            sessionStorage.setItem('gp_selected_scenario', JSON.stringify({
+                                                                asset_type: entry.asset_type,
+                                                                display_name: entry.display_name
+                                                            }));
+                                                            window.location.href = 'theatre.html';
+                                                        }}
+                                                        className="py-3 border-b border-border hover:bg-surface-raised cursor-pointer transition-colors px-2 -mx-2 rounded"
+                                                    >
+                                                        <div className="flex justify-between items-center mb-1">
+                                                            <span className="text-[13px] font-sans font-semibold text-text-primary">{entry.display_name}</span>
+                                                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold ${
+                                                                entry.risk_level === 'CRITICAL' ? 'bg-danger/10 text-danger border border-danger/20' :
+                                                                entry.risk_level === 'HIGH' ? 'bg-warning/10 text-warning border border-warning/20' :
+                                                                entry.risk_level === 'MEDIUM' ? 'bg-success/10 text-success border border-success/20' :
+                                                                'bg-surface-raised text-text-secondary border border-border'
+                                                            }`}>
+                                                                {entry.risk_level}
+                                                            </span>
+                                                        </div>
+                                                        <div className="flex justify-between items-center mb-1">
+                                                            <span className="text-[12px] font-mono text-text-secondary">{entry.suspected_group}</span>
+                                                            <span className="text-[11px] font-mono text-text-muted">{Math.round(entry.confidence_score * 100)}% confidence</span>
+                                                        </div>
+                                                        <div className="text-[11px] font-mono text-text-muted mb-1">
+                                                            {entry.compromised_asset} → {entry.predicted_next_target}
+                                                        </div>
+                                                        <div className="text-[10px] font-mono text-text-muted">
+                                                            {entry.saved_at ? entry.saved_at.substring(0, 16).replace('T', ' ') : '--'}
+                                                        </div>
+                                                    </div>
+                                                ))}
                                             </div>
                                         </div>
-                                    ))
-                                ) : (
-                                    <div className="py-8 text-center text-[12px] text-text-muted font-mono">
-                                        No critical CVEs retrieved or still loading...
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Controls */}
-                            <div className="mt-auto pt-2 border-t border-border/50 flex flex-col items-center">
-                                <button 
-                                    onClick={handleRefresh}
-                                    disabled={isRefreshing}
-                                    className="w-full bg-transparent border border-border hover:border-text-secondary text-text-secondary text-[11px] font-mono py-2 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed mb-3"
-                                >
-                                    {isRefreshing ? "REFRESHING..." : "REFRESH INTEL"}
-                                </button>
-                                <span className="text-[10px] text-text-muted">
-                                    Live data sourced from National Vulnerability Database (NVD)
-                                </span>
-                            </div>
+                                    )}
+                                </div>
+                            )}
                         </div>
                     </div>
 
